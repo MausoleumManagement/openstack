@@ -1,0 +1,60 @@
+---
+images:
+  tags:
+    bootstrap: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    db_init: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    db_drop: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    ks_user: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    ks_service: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    ks_endpoints: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    heat_db_sync: "quay.io/airshipit/heat:2025.2-ubuntu_noble"
+    heat_api: "quay.io/airshipit/heat:2025.2-ubuntu_noble"
+    heat_cfn: "quay.io/airshipit/heat:2025.2-ubuntu_noble"
+    heat_engine: "quay.io/airshipit/heat:2025.2-ubuntu_noble"
+    heat_engine_cleaner: "quay.io/airshipit/heat:2025.2-ubuntu_noble"
+    heat_purge_deleted: "quay.io/airshipit/heat:2025.2-ubuntu_noble"
+manifests:
+  network_policy: true
+network_policy:
+  heat:
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                application: heat
+          - podSelector:
+              matchLabels:
+                application: ingress
+          - podSelector:
+              matchLabels:
+                application: horizon
+        ports:
+          - protocol: TCP
+            port: 8000
+          - protocol: TCP
+            port: 8003
+          - protocol: TCP
+            port: 8004
+    egress:
+      - to:
+          - podSelector:
+              matchLabels:
+                application: neutron
+      - to:
+          - podSelector:
+              matchLabels:
+                application: nova
+      - to:
+          - podSelector:
+              matchLabels:
+                application: glance
+      - to:
+          - podSelector:
+              matchLabels:
+                application: cinder
+      - to:
+          - ipBlock:
+              cidr: 1.1.1.1/32
+        ports:
+          - protocol: TCP
+            port: 1234

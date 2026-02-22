@@ -1,0 +1,99 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+images:
+  tags:
+    prometheus_mysql_exporter_helm_tests: quay.io/airshipit/openstack-client:2025.2-ubuntu_noble
+    ks_user: quay.io/airshipit/openstack-client:2025.2-ubuntu_noble
+manifests:
+  network_policy: true
+network_policy:
+  mariadb:
+    egress:
+      - to:
+          - ipBlock:
+              cidr: 1.1.1.1/32
+        ports:
+          - protocol: TCP
+            port: 1234
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                application: keystone
+          - podSelector:
+              matchLabels:
+                application: heat
+          - podSelector:
+              matchLabels:
+                application: glance
+          - podSelector:
+              matchLabels:
+                application: cinder
+          - podSelector:
+              matchLabels:
+                application: aodh
+          - podSelector:
+              matchLabels:
+                application: barbican
+          - podSelector:
+              matchLabels:
+                application: ceilometer
+          - podSelector:
+              matchLabels:
+                application: designate
+          - podSelector:
+              matchLabels:
+                application: horizon
+          - podSelector:
+              matchLabels:
+                application: ironic
+          - podSelector:
+              matchLabels:
+                application: magnum
+          - podSelector:
+              matchLabels:
+                application: mistral
+          - podSelector:
+              matchLabels:
+                application: nova
+          - podSelector:
+              matchLabels:
+                application: neutron
+          - podSelector:
+              matchLabels:
+                application: rally
+          - podSelector:
+              matchLabels:
+                application: senlin
+          - podSelector:
+              matchLabels:
+                application: placement
+          - podSelector:
+              matchLabels:
+                application: prometheus-mysql-exporter
+          - podSelector:
+              matchLabels:
+                application: mariadb
+          - podSelector:
+              matchLabels:
+                application: mariadb-backup
+        ports:
+          - protocol: TCP
+            port: 3306
+          - protocol: TCP
+            port: 4567
+          - protocol: TCP
+            port: 80
+          - protocol: TCP
+            port: 8080

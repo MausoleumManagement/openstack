@@ -1,0 +1,79 @@
+---
+images:
+  tags:
+    bootstrap: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    db_init: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    db_drop: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    keystone_api: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    keystone_bootstrap: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+    keystone_credential_rotate: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    keystone_credential_setup: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    keystone_db_sync: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    keystone_domain_manage: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    keystone_fernet_rotate: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    keystone_fernet_setup: "quay.io/airshipit/keystone:2025.2-ubuntu_noble"
+    ks_user: "quay.io/airshipit/openstack-client:2025.2-ubuntu_noble"
+manifests:
+  network_policy: true
+network_policy:
+  keystone:
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                application: ceph
+          - podSelector:
+              matchLabels:
+                application: ingress
+          - podSelector:
+              matchLabels:
+                application: keystone
+          - podSelector:
+              matchLabels:
+                application: heat
+          - podSelector:
+              matchLabels:
+                application: glance
+          - podSelector:
+              matchLabels:
+                application: cinder
+          - podSelector:
+              matchLabels:
+                application: barbican
+          - podSelector:
+              matchLabels:
+                application: ceilometer
+          - podSelector:
+              matchLabels:
+                application: horizon
+          - podSelector:
+              matchLabels:
+                application: ironic
+          - podSelector:
+              matchLabels:
+                application: magnum
+          - podSelector:
+              matchLabels:
+                application: mistral
+          - podSelector:
+              matchLabels:
+                application: nova
+          - podSelector:
+              matchLabels:
+                application: neutron
+          - podSelector:
+              matchLabels:
+                application: placement
+          - podSelector:
+              matchLabels:
+                application: prometheus-openstack-exporter
+        ports:
+          - protocol: TCP
+            port: 5000
+    egress:
+      - to:
+          - ipBlock:
+              cidr: 1.1.1.1/32
+        ports:
+          - protocol: TCP
+            port: 1234

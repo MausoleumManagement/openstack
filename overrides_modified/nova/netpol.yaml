@@ -1,0 +1,17 @@
+---
+manifests:
+  network_policy: true
+network_policy:
+  nova:
+    egress:
+      - to:
+        - podSelector:
+            matchLabels:
+              application: nova
+      - to:
+        - ipBlock:
+            cidr: 1.1.1.1/32
+        ports:
+          - protocol: TCP
+            port: 1234
+...

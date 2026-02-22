@@ -1,0 +1,7 @@
+---
+manifests:
+  network_policy: true
+images:
+  tags:
+    openvswitch_db_server: quay.io/airshipit/openvswitch:latest-ubuntu_noble
+    openvswitch_vswitchd: quay.io/airshipit/openvswitch:latest-ubuntu_noble
