@@ -1,0 +1,1290 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq-cluster-wait
+  namespace: openstack
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq-rabbitmq
+  namespace: openstack
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq-test
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-openstack-rabbitmq-cluster-wait
+  namespace: openstack
+rules:
+- apiGroups:
+  - ""
+  - extensions
+  - batch
+  - apps
+  resources:
+  - services
+  - endpoints
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-openstack-rabbitmq-test
+  namespace: openstack
+rules:
+- apiGroups:
+  - ""
+  - extensions
+  - batch
+  - apps
+  resources:
+  - services
+  - endpoints
+  - jobs
+  - pods
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-rabbitmq
+  namespace: openstack
+rules:
+- apiGroups:
+  - ""
+  - extensions
+  - batch
+  - apps
+  resources:
+  - services
+  - endpoints
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-openstack-rabbitmq-cluster-wait
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-openstack-rabbitmq-cluster-wait
+subjects:
+- kind: ServiceAccount
+  name: rabbitmq-cluster-wait
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-openstack-rabbitmq-test
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-openstack-rabbitmq-test
+subjects:
+- kind: ServiceAccount
+  name: rabbitmq-test
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-rabbitmq
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-rabbitmq
+subjects:
+- kind: ServiceAccount
+  name: rabbitmq-rabbitmq
+  namespace: openstack
+---
+apiVersion: v1
+data:
+  rabbitmq-cookie.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+
+    cp -vf /run/lib/rabbitmq/.erlang.cookie /var/lib/rabbitmq/.erlang.cookie
+    chown "rabbitmq" /var/lib/rabbitmq/.erlang.cookie
+    chmod 0600 /var/lib/rabbitmq/.erlang.cookie
+  rabbitmq-liveness.sh: |
+    #!/usr/bin/env bash
+
+
+
+    set -e
+
+    if [ -f /tmp/rabbit-disable-liveness-probe ]; then
+       exit 0
+    else
+       exec rabbitmqctl ping
+    fi
+  rabbitmq-password-hash.py: |
+    #!/usr/bin/env python3
+
+
+
+    import base64
+    import json
+    import os
+    import hashlib
+    import re
+
+    user = os.environ['RABBITMQ_ADMIN_USERNAME']
+    password = os.environ['RABBITMQ_ADMIN_PASSWORD']
+    guest_password = os.environ['RABBITMQ_GUEST_PASSWORD']
+    output_file = os.environ['RABBITMQ_DEFINITION_FILE']
+
+    def hash_rabbit_password(password):
+        salt = os.urandom(4)
+        tmp0 = salt + password.encode('utf-8')
+        tmp1 = hashlib.sha512(tmp0).digest()
+        salted_hash = salt + tmp1
+        pass_hash = base64.b64encode(salted_hash)
+        return pass_hash.decode("utf-8")
+
+    output = {
+        "users": [{
+            "name": user,
+            "password_hash": hash_rabbit_password(password),
+            "hashing_algorithm": "rabbit_password_hashing_sha512",
+            "tags": "administrator"
+        },
+        {
+            "name": "guest",
+            "password_hash": hash_rabbit_password(guest_password),
+            "hashing_algorithm": "rabbit_password_hashing_sha512",
+            "tags": "administrator"
+        }
+        ]
+    }
+
+    if 'RABBITMQ_USERS' in os.environ:
+        output.update({'vhosts': []})
+        output.update({'permissions': []})
+        users_creds = json.loads(os.environ['RABBITMQ_USERS'])
+        for user, creds in users_creds.items():
+            if 'auth' in creds:
+                for auth_key, auth_val in creds['auth'].items():
+                    username = auth_val['username']
+                    password = auth_val['password']
+                    user_struct = {
+                        "name": username,
+                        "password_hash": hash_rabbit_password(password),
+                        "hashing_algorithm": "rabbit_password_hashing_sha512",
+                        "tags": ""
+                    }
+                    output['users'].append(user_struct)
+                    if 'path' in creds:
+                        for path in (
+                            creds["path"]
+                            if isinstance(creds["path"], list)
+                            else [creds["path"]]
+                        ):
+                            vhost = re.sub("^/", "", path)
+                            vhost_struct = {"name": vhost}
+
+                            perm_struct = {
+                                "user": username,
+                                "vhost": vhost,
+                                "configure": ".*",
+                                "write": ".*",
+                                "read": ".*"
+                            }
+
+                            output['vhosts'].append(vhost_struct)
+                            output['permissions'].append(perm_struct)
+
+    if 'RABBITMQ_AUXILIARY_CONFIGURATION' in os.environ:
+        aux_conf = json.loads(os.environ['RABBITMQ_AUXILIARY_CONFIGURATION'])
+        if aux_conf.get('policies', []):
+            output['policies'] = aux_conf['policies']
+        if aux_conf.get('bindings', []):
+            output['bindings'] = aux_conf['bindings']
+        if aux_conf.get('queues', []):
+            output['queues'] = aux_conf['queues']
+        if aux_conf.get('exchanges', []):
+            output['exchanges'] = aux_conf['exchanges']
+
+    with open(output_file, 'w') as f:
+        f.write(json.dumps(output))
+        f.close()
+  rabbitmq-readiness.sh: |
+    #!/usr/bin/env bash
+
+
+
+    set -e
+
+    if [ -f /tmp/rabbit-disable-readiness ]; then
+       exit 1
+    else
+       exec rabbitmqctl ping
+    fi
+  rabbitmq-start.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+
+    function check_if_open () {
+      HOST=$1
+      PORT=$2
+      timeout 10 bash -c "true &>/dev/null </dev/tcp/${HOST}/${PORT}"
+    }
+
+    function check_rabbit_node_health () {
+      CLUSTER_SEED_NAME=$1
+      rabbitmq-diagnostics node_health_check -n "${CLUSTER_SEED_NAME}" -t 10 &>/dev/null
+    }
+
+    get_node_name () {
+      TARGET_POD=$1
+      POD_NAME_PREFIX="$(echo "${MY_POD_NAME}" | awk 'BEGIN{FS=OFS="-"}{NF--; print}')"
+      echo "${RABBITMQ_NODENAME}" | awk -F "@${MY_POD_NAME}." "{ print \$1 \"@${POD_NAME_PREFIX}-${TARGET_POD}.\" \$2 }"
+    }
+
+    function check_rabbit_node_ready () {
+      TARGET_POD=$1
+      CLUSTER_SEED_NAME="$(get_node_name ${TARGET_POD})"
+      CLUSTER_SEED_HOST="$(echo "${CLUSTER_SEED_NAME}" | awk -F '@' '{ print $NF }')"
+      check_rabbit_node_health "${CLUSTER_SEED_NAME}" && \
+      check_if_open "${CLUSTER_SEED_HOST}" "${PORT_HTTP}" && \
+      check_if_open "${CLUSTER_SEED_HOST}" "${PORT_AMPQ}" && \
+      check_if_open "${CLUSTER_SEED_HOST}" "${PORT_CLUSTERING}"
+    }
+
+    POD_INCREMENT=$(echo "${MY_POD_NAME}" | awk -F '-' '{print $NF}')
+    if ! [ "${POD_INCREMENT}" -eq "0" ] && ! [ -d "/var/lib/rabbitmq/mnesia" ] ; then
+      echo 'This is not the 1st rabbit pod & has not been initialised'
+      # disable liveness probe as it may take some time for the pod to come online.
+      touch /tmp/rabbit-disable-liveness-probe
+      POD_NAME_PREFIX="$(echo "${MY_POD_NAME}" | awk 'BEGIN{FS=OFS="-"}{NF--; print}')"
+      for TARGET_POD in $(seq 0 +1 $((POD_INCREMENT - 1 ))); do
+        END=$(($(date +%s) + 900))
+        while ! check_rabbit_node_ready "${TARGET_POD}"; do
+          sleep 5
+          if [ "$(date +%s)" -gt "$END" ]; then
+            echo "RabbitMQ pod ${TARGET_POD} not ready in time"
+            exit 1
+          fi
+        done
+      done
+
+      function reset_rabbit () {
+        rabbitmqctl shutdown || true
+        find /var/lib/rabbitmq/* ! -name 'definitions.json' ! -name '.erlang.cookie' -exec rm -rf {} +
+        exit 1
+      }
+
+      # Start RabbitMQ, but disable readiness from being reported so the pod is not
+      # marked as up prematurely.
+      touch /tmp/rabbit-disable-readiness
+      rabbitmq-server &
+
+      # Wait for server to start, and reset if it does not
+      END=$(($(date +%s) + 180))
+      while ! rabbitmqctl -q cluster_status; do
+          sleep 5
+          NOW=$(date +%s)
+          [ $NOW -gt $END ] && reset_rabbit
+      done
+
+      # Wait for server to join cluster, reset if it does not
+      POD_INCREMENT=$(echo "${MY_POD_NAME}" | awk -F '-' '{print $NF}')
+      END=$(($(date +%s) + 180))
+      while ! rabbitmqctl -l --node $(get_node_name 0) -q cluster_status | grep -q "$(get_node_name ${POD_INCREMENT})"; do
+        sleep 5
+        NOW=$(date +%s)
+        [ $NOW -gt $END ] && reset_rabbit
+      done
+
+      # Shutdown the inital server
+      rabbitmqctl shutdown
+
+      rm -fv /tmp/rabbit-disable-readiness /tmp/rabbit-disable-liveness-probe
+    fi
+    exec rabbitmq-server
+  rabbitmq-test.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+
+    # Extract connection details
+    RABBIT_HOSTNAME=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $2}' \
+      | awk -F'[:/]' '{print $1}'`
+    RABBIT_PORT=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $2}' \
+      | awk -F'[:/]' '{print $2}'`
+
+    set +x
+    # Extract Admin User creadential
+    RABBITMQ_ADMIN_USERNAME=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $1}' \
+      | awk -F'[//:]' '{print $4}'`
+    RABBITMQ_ADMIN_PASSWORD=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $1}' \
+      | awk -F'[//:]' '{print $5}'`
+    set -x
+
+    function rabbitmqadmin_authed () {
+      set +x
+      rabbitmqadmin \
+        --host="${RABBIT_HOSTNAME}" \
+        --port="${RABBIT_PORT}" \
+        --username="${RABBITMQ_ADMIN_USERNAME}" \
+        --password="${RABBITMQ_ADMIN_PASSWORD}" \
+        ${@}
+      set -x
+    }
+
+    function rabbit_check_node_count () {
+      echo "Checking node count "
+      NODES_IN_CLUSTER=$(rabbitmqadmin_authed list nodes -f bash | wc -w)
+      if [ "$NODES_IN_CLUSTER" -eq "$RABBIT_REPLICA_COUNT" ]; then
+        echo "Number of nodes in cluster ($NODES_IN_CLUSTER) match number of desired pods ($NODES_IN_CLUSTER)"
+      else
+        echo "Number of nodes in cluster ($NODES_IN_CLUSTER) does not match number of desired pods ($RABBIT_REPLICA_COUNT)"
+        exit 1
+      fi
+    }
+    # Check node count
+    rabbit_check_node_count
+
+    function rabbit_find_partitions () {
+      NODE_INFO=$(mktemp)
+      rabbitmqadmin_authed list nodes -f pretty_json | tee "${NODE_INFO}"
+      cat "${NODE_INFO}" | python3 -c "
+    import json, sys, traceback
+    print('Checking cluster partitions')
+    obj=json.load(sys.stdin)
+    for num, node in enumerate(obj):
+      try:
+        partition = node['partitions']
+        if partition:
+          raise Exception('cluster partition found: %s' % partition)
+      except KeyError:
+        print('Error: partition key not found for node %s' % node)
+    print('No cluster partitions found')
+      "
+      rm -vf "${NODE_INFO}"
+    }
+    rabbit_find_partitions
+
+    function rabbit_check_users_match () {
+      echo "Checking users match on all nodes"
+      NODES=$(rabbitmqadmin_authed list nodes -f bash)
+      USER_LIST=$(mktemp --directory)
+      echo "Found the following nodes: ${NODES}"
+      for NODE in ${NODES}; do
+        echo "Checking Node: ${NODE#*@}"
+        rabbitmqadmin_authed list users -f bash > ${USER_LIST}/${NODE#*@}
+      done
+      cd ${USER_LIST}; diff -q --from-file $(ls ${USER_LIST})
+      echo "User lists match for all nodes"
+    }
+    # Check users match on all nodes
+    rabbit_check_users_match
+  rabbitmq-wait-for-cluster.sh: |
+    #!/bin/bash
+
+
+
+    set -e
+
+    # Extract connection details
+    RABBIT_HOSTNAME=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $2}' \
+      | awk -F'[:/]' '{print $1}'`
+    RABBIT_PORT=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $2}' \
+      | awk -F'[:/]' '{print $2}'`
+
+    # Extract Admin User creadential
+    RABBITMQ_ADMIN_USERNAME=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $1}' \
+      | awk -F'[//:]' '{print $4}'`
+    RABBITMQ_ADMIN_PASSWORD=`echo $RABBITMQ_ADMIN_CONNECTION | awk -F'[@]' '{print $1}' \
+      | awk -F'[//:]' '{print $5}'`
+
+    set -ex
+
+    function rabbitmqadmin_authed () {
+      set +x
+      rabbitmqadmin \
+        --host="${RABBIT_HOSTNAME}" \
+        --port="${RABBIT_PORT}" \
+        --username="${RABBITMQ_ADMIN_USERNAME}" \
+        --password="${RABBITMQ_ADMIN_PASSWORD}" \
+        ${@}
+      set -x
+    }
+
+    function active_rabbit_nodes () {
+      rabbitmqadmin_authed list nodes -f bash | wc -w
+    }
+
+    until test "$(active_rabbit_nodes)" -ge "$RABBIT_REPLICA_COUNT"; do
+        echo "Waiting for number of nodes in cluster to meet or exceed number of desired pods ($RABBIT_REPLICA_COUNT)"
+        sleep 10
+    done
+
+    function sorted_node_list () {
+      rabbitmqadmin_authed list nodes -f bash | tr ' ' '\n' | sort | tr '\n' ' '
+    }
+
+    if test "$(active_rabbit_nodes)" -gt "$RABBIT_REPLICA_COUNT"; then
+        echo "There are more nodes registed in the cluster than desired, pruning the cluster"
+        PRIMARY_NODE="$(sorted_node_list | awk '{ print $1; exit }')"
+        until rabbitmqctl -l -n "${PRIMARY_NODE}" cluster_status >/dev/null 2>&1 ; do
+          echo "Waiting for primary node to return cluster status"
+          sleep 10
+        done
+        echo "Current cluster:"
+        rabbitmqctl -l -n "${PRIMARY_NODE}" cluster_status
+        NODES_TO_REMOVE="$(sorted_node_list | awk "{print substr(\$0, index(\$0,\$$((RABBIT_REPLICA_COUNT+1))))}")"
+        for NODE in ${NODES_TO_REMOVE}; do
+          rabbitmqctl -l -n "${NODE}" stop_app || true
+          rabbitmqctl -l -n "${PRIMARY_NODE}" forget_cluster_node "${NODE}"
+        done
+        echo "Updated cluster:"
+        rabbitmqctl -l -n "${PRIMARY_NODE}" cluster_status
+    fi
+kind: ConfigMap
+metadata:
+  name: rabbitmq-rabbitmq-bin
+---
+apiVersion: v1
+data:
+  enabled_plugins: |2
+
+
+    [rabbitmq_management,rabbitmq_peer_discovery_k8s,rabbitmq_prometheus].
+  rabbitmq-env.conf: |
+    SERVER_ADDITIONAL_ERL_ARGS="+S 1:1"
+  rabbitmq.conf: |
+    cluster_formation.k8s.address_type = hostname
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    cluster_formation.node_cleanup.interval = 10
+    cluster_formation.node_cleanup.only_log_warning = true
+    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
+    cluster_partition_handling = autoheal
+    listeners.tcp.1 = :::5672
+    loopback_users.guest = false
+    management.load_definitions = /var/lib/rabbitmq/definitions.json
+    queue_master_locator = min-masters
+
+    management.listener.ip = ::
+    management.listener.port = 15672
+kind: ConfigMap
+metadata:
+  name: rabbitmq-rabbitmq-etc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/instance: rabbitmq
+    app.kubernetes.io/name: rabbitmq
+    application: rabbitmq
+    component: server
+    release_group: rabbitmq
+  name: rabbitmq
+spec:
+  clusterIP: None
+  ports:
+  - name: amqp
+    port: 5672
+  - name: clustering
+    port: 25672
+  - name: http
+    port: 15672
+  - name: metrics
+    port: 15692
+  selector:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/instance: rabbitmq
+    app.kubernetes.io/name: rabbitmq
+    application: rabbitmq
+    component: server
+    release_group: rabbitmq
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-mgr-7b1733
+spec:
+  ports:
+  - name: http
+    port: 80
+  - name: https
+    port: 443
+  selector:
+    app: ingress-api
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    openstackhelm.openstack.org/release_uuid: ""
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/instance: rabbitmq
+    app.kubernetes.io/name: rabbitmq
+    application: rabbitmq
+    component: server
+    release_group: rabbitmq
+  name: rabbitmq-rabbitmq
+spec:
+  podManagementPolicy: Parallel
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: server
+      app.kubernetes.io/instance: rabbitmq
+      app.kubernetes.io/name: rabbitmq
+      application: rabbitmq
+      component: server
+      release_group: rabbitmq
+  serviceName: rabbitmq
+  template:
+    metadata:
+      annotations:
+        configmap-bin-hash: 54755eedc77640ebb18be1b0b26d6e15276253fa95d4bb164e540e8d68eda0b4
+        configmap-etc-hash: b8a5225f707ef1b315a5bf6a314c0a47febc8183fbfca0e9a28696d411e11a89
+        openstackhelm.openstack.org/release_uuid: ""
+        secret-erlang-cookie-hash: f9c2a35397a22b98d875eec1818b3f87bbd58e7d4976a0c5fc1087700958862d
+        secret-rabbit-admin-hash: b819675eb8c344ecf626d029dc9807a95bfc03171182227a79fdd41718c81f07
+      labels:
+        app.kubernetes.io/component: server
+        app.kubernetes.io/instance: rabbitmq
+        app.kubernetes.io/name: rabbitmq
+        application: rabbitmq
+        component: server
+        release_group: rabbitmq
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: release_group
+                  operator: In
+                  values:
+                  - rabbitmq
+                - key: application
+                  operator: In
+                  values:
+                  - rabbitmq
+                - key: component
+                  operator: In
+                  values:
+                  - server
+              topologyKey: kubernetes.io/hostname
+            weight: 10
+      containers:
+      - command:
+        - /tmp/rabbitmq-start.sh
+        env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: RABBITMQ_USE_LONGNAME
+          value: "true"
+        - name: RABBITMQ_NODENAME
+          value: rabbit@$(MY_POD_NAME).rabbitmq.openstack.svc.cluster.local
+        - name: K8S_SERVICE_NAME
+          value: rabbitmq
+        - name: K8S_HOSTNAME_SUFFIX
+          value: .rabbitmq.openstack.svc.cluster.local
+        - name: RABBITMQ_ERLANG_COOKIE
+          value: openstack-cookie
+        - name: PORT_HTTP
+          value: "15672"
+        - name: PORT_AMPQ
+          value: "5672"
+        - name: PORT_CLUSTERING
+          value: "25672"
+        image: quay.io/airshipit/rabbitmq:3.10.18
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - rabbitmqctl
+              - stop_app
+        livenessProbe:
+          exec:
+            command:
+            - /tmp/rabbitmq-liveness.sh
+          failureThreshold: 5
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+        name: rabbitmq
+        ports:
+        - containerPort: 15672
+          name: http
+          protocol: TCP
+        - containerPort: 5672
+          name: amqp
+          protocol: TCP
+        - containerPort: 25672
+          name: clustering
+          protocol: TCP
+        - containerPort: 15692
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - /tmp/rabbitmq-readiness.sh
+          failureThreshold: 3
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          runAsUser: 999
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /var/lib/rabbitmq
+          name: rabbitmq-data
+        - mountPath: /tmp/rabbitmq-start.sh
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-start.sh
+        - mountPath: /tmp/rabbitmq-readiness.sh
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-readiness.sh
+        - mountPath: /tmp/rabbitmq-liveness.sh
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-liveness.sh
+        - mountPath: /etc/rabbitmq/enabled_plugins
+          name: rabbitmq-etc
+          readOnly: true
+          subPath: enabled_plugins
+        - mountPath: /etc/rabbitmq/rabbitmq.conf
+          name: rabbitmq-etc
+          readOnly: true
+          subPath: rabbitmq.conf
+        - mountPath: /etc/rabbitmq/rabbitmq-env.conf
+          name: rabbitmq-etc
+          readOnly: true
+          subPath: rabbitmq-env.conf
+      initContainers:
+      - command:
+        - kubernetes-entrypoint
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: INTERFACE_NAME
+          value: eth0
+        - name: PATH
+          value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/
+        - name: DEPENDENCY_SERVICE
+          value: ""
+        - name: DEPENDENCY_DAEMONSET
+          value: ""
+        - name: DEPENDENCY_CONTAINER
+          value: ""
+        - name: DEPENDENCY_POD_JSON
+          value: ""
+        - name: DEPENDENCY_CUSTOM_RESOURCE
+          value: ""
+        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_jammy
+        imagePullPolicy: IfNotPresent
+        name: init
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsUser: 65534
+        volumeMounts: []
+      - command:
+        - /tmp/rabbitmq-password-hash.py
+        env:
+        - name: RABBITMQ_ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: RABBITMQ_ADMIN_USERNAME
+              name: rabbitmq-admin-user
+        - name: RABBITMQ_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: RABBITMQ_ADMIN_PASSWORD
+              name: rabbitmq-admin-user
+        - name: RABBITMQ_GUEST_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: RABBITMQ_GUEST_PASSWORD
+              name: rabbitmq-admin-user
+        - name: RABBITMQ_DEFINITION_FILE
+          value: /var/lib/rabbitmq/definitions.json
+        image: quay.io/airshipit/openstack-client:2025.2-ubuntu_noble
+        imagePullPolicy: IfNotPresent
+        name: rabbitmq-password
+        securityContext:
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /var/lib/rabbitmq
+          name: rabbitmq-data
+        - mountPath: /tmp/rabbitmq-password-hash.py
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-password-hash.py
+      - command:
+        - /tmp/rabbitmq-cookie.sh
+        image: quay.io/airshipit/rabbitmq:3.10.18
+        imagePullPolicy: IfNotPresent
+        name: rabbitmq-cookie
+        securityContext:
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /tmp/rabbitmq-cookie.sh
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-cookie.sh
+        - mountPath: /var/lib/rabbitmq
+          name: rabbitmq-data
+        - mountPath: /var/run/lib/rabbitmq/.erlang.cookie
+          name: rabbitmq-erlang-cookie
+          readOnly: true
+          subPath: erlang_cookie
+      - command:
+        - chown
+        - -R
+        - "999"
+        - /var/lib/rabbitmq
+        image: quay.io/airshipit/rabbitmq:3.10.18
+        imagePullPolicy: IfNotPresent
+        name: rabbitmq-perms
+        securityContext:
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /var/lib/rabbitmq
+          name: rabbitmq-data
+      nodeSelector:
+        openstack-control-plane: enabled
+      securityContext:
+        runAsUser: 999
+      serviceAccountName: rabbitmq-rabbitmq
+      volumes:
+      - emptyDir: {}
+        name: pod-tmp
+      - configMap:
+          defaultMode: 365
+          name: rabbitmq-rabbitmq-bin
+        name: rabbitmq-bin
+      - configMap:
+          defaultMode: 292
+          name: rabbitmq-rabbitmq-etc
+        name: rabbitmq-etc
+      - name: rabbitmq-erlang-cookie
+        secret:
+          defaultMode: 292
+          secretName: rabbitmq-erlang-cookie
+  volumeClaimTemplates:
+  - metadata:
+      name: rabbitmq-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 768Mi
+      storageClassName: general
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/hook-weight: "5"
+    openstackhelm.openstack.org/release_uuid: ""
+  labels:
+    app.kubernetes.io/component: cluster-wait
+    app.kubernetes.io/instance: rabbitmq
+    app.kubernetes.io/name: rabbitmq
+    application: rabbitmq
+    component: cluster-wait
+    release_group: rabbitmq
+  name: rabbitmq-cluster-wait
+spec:
+  template:
+    metadata:
+      annotations:
+        configmap-bin-hash: 54755eedc77640ebb18be1b0b26d6e15276253fa95d4bb164e540e8d68eda0b4
+        configmap-etc-hash: b8a5225f707ef1b315a5bf6a314c0a47febc8183fbfca0e9a28696d411e11a89
+        openstackhelm.openstack.org/release_uuid: ""
+      labels:
+        app.kubernetes.io/component: cluster-wait
+        app.kubernetes.io/instance: rabbitmq
+        app.kubernetes.io/name: rabbitmq
+        application: rabbitmq
+        component: cluster-wait
+        release_group: rabbitmq
+    spec:
+      containers:
+      - command:
+        - /tmp/rabbitmq-wait-for-cluster.sh
+        env:
+        - name: RABBITMQ_ADMIN_CONNECTION
+          value: rabbit://rabbitmq:password@rabbitmq.openstack.svc.cluster.local:15672/
+        - name: RABBIT_REPLICA_COUNT
+          value: "2"
+        image: quay.io/airshipit/rabbitmq:3.10.18-management
+        imagePullPolicy: IfNotPresent
+        name: rabbitmq-rabbitmq-cluster-wait
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /tmp/rabbitmq-wait-for-cluster.sh
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-wait-for-cluster.sh
+        - mountPath: /var/lib/rabbitmq
+          name: rabbitmq-data
+      initContainers:
+      - command:
+        - kubernetes-entrypoint
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: INTERFACE_NAME
+          value: eth0
+        - name: PATH
+          value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/
+        - name: DEPENDENCY_SERVICE
+          value: openstack:rabbitmq
+        - name: DEPENDENCY_DAEMONSET
+          value: ""
+        - name: DEPENDENCY_CONTAINER
+          value: ""
+        - name: DEPENDENCY_POD_JSON
+          value: ""
+        - name: DEPENDENCY_CUSTOM_RESOURCE
+          value: ""
+        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_jammy
+        imagePullPolicy: IfNotPresent
+        name: init
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsUser: 65534
+        volumeMounts: []
+      - command:
+        - /tmp/rabbitmq-cookie.sh
+        image: quay.io/airshipit/rabbitmq:3.10.18-management
+        imagePullPolicy: IfNotPresent
+        name: rabbitmq-cookie
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /tmp/rabbitmq-cookie.sh
+          name: rabbitmq-bin
+          readOnly: true
+          subPath: rabbitmq-cookie.sh
+        - mountPath: /var/lib/rabbitmq
+          name: rabbitmq-data
+        - mountPath: /var/run/lib/rabbitmq/.erlang.cookie
+          name: rabbitmq-erlang-cookie
+          readOnly: true
+          subPath: erlang_cookie
+      nodeSelector:
+        openstack-control-plane: enabled
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 999
+      serviceAccountName: rabbitmq-cluster-wait
+      volumes:
+      - emptyDir: {}
+        name: pod-tmp
+      - emptyDir: {}
+        name: rabbitmq-data
+      - configMap:
+          defaultMode: 365
+          name: rabbitmq-rabbitmq-bin
+        name: rabbitmq-bin
+      - name: rabbitmq-erlang-cookie
+        secret:
+          defaultMode: 292
+          secretName: rabbitmq-erlang-cookie
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: rabbitmq-admin-user
+  namespace: openstack
+spec:
+  data:
+  - remoteRef:
+      key: kv/underdark/openstack/rabbitmq-admin-user
+      property: RABBITMQ_ADMIN_USERNAME
+    secretKey: RABBITMQ_ADMIN_USERNAME
+  - remoteRef:
+      key: kv/underdark/openstack/rabbitmq-admin-user
+      property: RABBITMQ_ADMIN_PASSWORD
+    secretKey: RABBITMQ_ADMIN_PASSWORD
+  - remoteRef:
+      key: kv/underdark/openstack/rabbitmq-admin-user
+      property: RABBITMQ_GUEST_PASSWORD
+    secretKey: RABBITMQ_GUEST_PASSWORD
+  refreshInterval: 1h0m0s
+  refreshPolicy: Periodic
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: openbao-backend
+  target:
+    name: rabbitmq-admin-user
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: rabbitmq-erlang-cookie
+  namespace: openstack
+spec:
+  data:
+  - remoteRef:
+      key: kv/underdark/openstack/rabbitmq-erlang-cookie
+      property: erlang_cookie
+    secretKey: erlang_cookie
+  refreshInterval: 1h0m0s
+  refreshPolicy: Periodic
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: openbao-backend
+  target:
+    name: rabbitmq-erlang-cookie
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    haproxy.org/path-rewrite: /
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  name: rabbitmq-mgr-7b1733
+spec:
+  ingressClassName: ingress-openstack
+  rules:
+  - host: rabbitmq-mgr-7b1733
+    http:
+      paths:
+      - backend:
+          service:
+            name: rabbitmq
+            port:
+              name: http
+        path: /
+        pathType: Prefix
+  - host: rabbitmq-mgr-7b1733.openstack
+    http:
+      paths:
+      - backend:
+          service:
+            name: rabbitmq
+            port:
+              name: http
+        path: /
+        pathType: Prefix
+  - host: rabbitmq-mgr-7b1733.openstack.svc.cluster.local
+    http:
+      paths:
+      - backend:
+          service:
+            name: rabbitmq
+            port:
+              name: http
+        path: /
+        pathType: Prefix
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-netpol
+  namespace: openstack
+spec:
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+  - ports:
+    - port: 5000
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          name: docker-registry
+  - ports:
+    - port: 9090
+      protocol: TCP
+    - port: 80
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          application: prom
+  - ports: null
+    to:
+    - namespaceSelector:
+        matchLabels:
+          name: oci-image-registry
+  - ports:
+    - port: 5672
+      protocol: TCP
+    - port: 15672
+      protocol: TCP
+    - port: 80
+      protocol: TCP
+    - port: 15692
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          application: rabbitmq
+  - ports:
+    - port: 4369
+      protocol: TCP
+    - port: 25672
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          application: rabbitmq
+  - ports:
+    - port: 1234
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 1.1.1.1/32
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          application: keystone
+    - podSelector:
+        matchLabels:
+          application: heat
+    - podSelector:
+        matchLabels:
+          application: glance
+    - podSelector:
+        matchLabels:
+          application: cinder
+    - podSelector:
+        matchLabels:
+          application: aodh
+    - podSelector:
+        matchLabels:
+          application: barbican
+    - podSelector:
+        matchLabels:
+          application: ceilometer
+    - podSelector:
+        matchLabels:
+          application: designate
+    - podSelector:
+        matchLabels:
+          application: ironic
+    - podSelector:
+        matchLabels:
+          application: magnum
+    - podSelector:
+        matchLabels:
+          application: mistral
+    - podSelector:
+        matchLabels:
+          application: nova
+    - podSelector:
+        matchLabels:
+          application: neutron
+    - podSelector:
+        matchLabels:
+          application: senlin
+    - podSelector:
+        matchLabels:
+          application: placement
+    - podSelector:
+        matchLabels:
+          application: rabbitmq
+    - podSelector:
+        matchLabels:
+          application: prometheus_rabbitmq_exporter
+    ports:
+    - port: 5672
+      protocol: TCP
+    - port: 15672
+      protocol: TCP
+    - port: 80
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          application: rabbitmq
+    ports:
+    - port: 25672
+      protocol: TCP
+    - port: 4369
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      application: rabbitmq
+  policyTypes:
+  - Egress
+  - Ingress
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    helm.sh/hook: test-success
+    openstackhelm.openstack.org/release_uuid: ""
+  labels:
+    app.kubernetes.io/component: test
+    app.kubernetes.io/instance: rabbitmq
+    app.kubernetes.io/name: rabbitmq
+    application: rabbitmq
+    component: test
+    release_group: rabbitmq
+  name: rabbitmq-test
+spec:
+  containers:
+  - command:
+    - /tmp/rabbitmq-test.sh
+    env:
+    - name: RABBITMQ_ADMIN_CONNECTION
+      value: rabbit://rabbitmq:password@rabbitmq.openstack.svc.cluster.local:15672/
+    - name: RABBIT_REPLICA_COUNT
+      value: "2"
+    image: quay.io/airshipit/rabbitmq:3.10.18-management
+    imagePullPolicy: IfNotPresent
+    name: rabbitmq-rabbitmq-test
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+    volumeMounts:
+    - mountPath: /tmp
+      name: pod-tmp
+    - mountPath: /tmp/rabbitmq-test.sh
+      name: rabbitmq-bin
+      readOnly: true
+      subPath: rabbitmq-test.sh
+  initContainers:
+  - command:
+    - kubernetes-entrypoint
+    env:
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.name
+    - name: NAMESPACE
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.namespace
+    - name: INTERFACE_NAME
+      value: eth0
+    - name: PATH
+      value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/
+    - name: DEPENDENCY_SERVICE
+      value: openstack:rabbitmq
+    - name: DEPENDENCY_JOBS
+      value: rabbitmq-cluster-wait
+    - name: DEPENDENCY_DAEMONSET
+      value: ""
+    - name: DEPENDENCY_CONTAINER
+      value: ""
+    - name: DEPENDENCY_POD_JSON
+      value: ""
+    - name: DEPENDENCY_CUSTOM_RESOURCE
+      value: ""
+    image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_jammy
+    imagePullPolicy: IfNotPresent
+    name: init
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsUser: 65534
+    volumeMounts: []
+  nodeSelector:
+    openstack-control-plane: enabled
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 999
+  serviceAccountName: rabbitmq-test
+  volumes:
+  - emptyDir: {}
+    name: pod-tmp
+  - configMap:
+      defaultMode: 365
+      name: rabbitmq-rabbitmq-bin
+    name: rabbitmq-bin

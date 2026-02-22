@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+  # https://opendev.org/openstack/openstack-helm
+  # https://artifacthub.io/packages/helm/cilium/cilium
+namespace: openstack
+helmCharts:
+  - name: rabbitmq
+    namespace: openstack
+    releaseName: rabbitmq
+    repo: https://tarballs.opendev.org/openstack/openstack-helm
+    valuesFile: values_upstream.yaml
+    version: 2025.2.7+692ade4c7
+resources:
+  - externalsecrets.yaml
+patches:
+  - path: patch-delete-secrets.yaml
