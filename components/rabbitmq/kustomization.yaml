@@ -12,5 +12,6 @@ helmCharts:
     version: 2025.2.7+692ade4c7
 resources:
   - externalsecrets.yaml
+  - namespace.yaml
 patches:
   - path: patch-delete-secrets.yaml
