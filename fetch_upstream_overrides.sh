@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 export OPENSTACK_RELEASE=2025.2
 #TODO: There are other neat features we could look at
 # https://opendev.org/openstack/openstack-helm/src/branch/master/values_overrides
