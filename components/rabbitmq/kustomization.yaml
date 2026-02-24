@@ -1,7 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
   # https://opendev.org/openstack/openstack-helm
-  # https://artifacthub.io/packages/helm/cilium/cilium
 namespace: openstack
 helmCharts:
   - name: rabbitmq
@@ -10,6 +9,7 @@ helmCharts:
     repo: https://tarballs.opendev.org/openstack/openstack-helm
     valuesFile: values_upstream.yaml
     version: 2025.2.7+692ade4c7
+    skipTests: true
 resources:
   - externalsecrets.yaml
   - namespace.yaml
