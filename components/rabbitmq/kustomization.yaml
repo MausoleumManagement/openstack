@@ -8,7 +8,7 @@ helmCharts:
     releaseName: rabbitmq
     repo: https://tarballs.opendev.org/openstack/openstack-helm
     valuesFile: values_upstream.yaml
-    version: 2025.2.7+692ade4c7
+    version: 2025.2.9+3bc47c1e9
     skipTests: true
 resources:
   - externalsecrets.yaml
