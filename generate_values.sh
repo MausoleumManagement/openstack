@@ -13,5 +13,5 @@ for component in $(basename --multiple overrides_modified/*); do
     mkdir -p "./components/$component"
 
     # https://mikefarah.gitbook.io/yq/operators/reduce#merge-all-yaml-files-together
-    yq eval-all '. as $item ireduce ({}; . * $item )' ./overrides_modified/"$component"/* > ./components/"$component"/values_upstream.yaml
+    yq eval-all '. as $item ireduce ({}; . * $item )' ./overrides_modified/"$component"/* ./overrides_global.yaml > ./components/"$component"/values_upstream.yaml
 done

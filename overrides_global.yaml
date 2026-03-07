@@ -1,0 +1,16 @@
+images:
+  local_registry:
+    active: true
+    exclude: []
+
+endpoints:
+  local_image_registry:
+    hosts:
+      default: harbor.nekropolis.irminsul
+      node: harbor.nekropolis.irminsul
+    port:
+      registry:
+        node: 443
+
+manifests:
+  job_image_repo_sync: false
