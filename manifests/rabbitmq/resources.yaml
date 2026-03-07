@@ -480,15 +480,16 @@ data:
   enabled_plugins: |2
 
 
-    [rabbitmq_management,rabbitmq_peer_discovery_k8s,rabbitmq_prometheus].
+    [rabbitmq_management,rabbitmq_prometheus].
   rabbitmq-env.conf: |
     SERVER_ADDITIONAL_ERL_ARGS="+S 1:1"
   rabbitmq.conf: |
+    cluster_formation.dns.hostname = rabbitmq.openstack.svc.cluster.local
     cluster_formation.k8s.address_type = hostname
     cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
     cluster_formation.node_cleanup.interval = 10
     cluster_formation.node_cleanup.only_log_warning = true
-    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
+    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_dns
     cluster_partition_handling = autoheal
     listeners.tcp.1 = :::5672
     loopback_users.guest = false
@@ -575,7 +576,7 @@ spec:
     metadata:
       annotations:
         configmap-bin-hash: 54755eedc77640ebb18be1b0b26d6e15276253fa95d4bb164e540e8d68eda0b4
-        configmap-etc-hash: b8a5225f707ef1b315a5bf6a314c0a47febc8183fbfca0e9a28696d411e11a89
+        configmap-etc-hash: 7364debe23dab1b5e5c49c4600dec2401902fe29d753ac8bf21903de5a858c31
         openstackhelm.openstack.org/release_uuid: ""
         secret-erlang-cookie-hash: f9c2a35397a22b98d875eec1818b3f87bbd58e7d4976a0c5fc1087700958862d
         secret-rabbit-admin-hash: b819675eb8c344ecf626d029dc9807a95bfc03171182227a79fdd41718c81f07
@@ -868,7 +869,7 @@ spec:
     metadata:
       annotations:
         configmap-bin-hash: 54755eedc77640ebb18be1b0b26d6e15276253fa95d4bb164e540e8d68eda0b4
-        configmap-etc-hash: b8a5225f707ef1b315a5bf6a314c0a47febc8183fbfca0e9a28696d411e11a89
+        configmap-etc-hash: 7364debe23dab1b5e5c49c4600dec2401902fe29d753ac8bf21903de5a858c31
         openstackhelm.openstack.org/release_uuid: ""
       labels:
         app.kubernetes.io/component: cluster-wait
@@ -1125,11 +1126,17 @@ spec:
         matchLabels:
           application: rabbitmq
   - ports:
-    - port: 1234
+    - port: 53
+      protocol: UDP
+    - port: 53
       protocol: TCP
     to:
-    - ipBlock:
-        cidr: 1.1.1.1/32
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
   ingress:
   - from:
     - podSelector:

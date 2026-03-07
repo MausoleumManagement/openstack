@@ -10,3 +10,44 @@ labels:
     node_selector_key: kubernetes.io/os
     node_selector_value: linux
 
+conf:
+  # see the info below why we are overriding the discovery plugin used
+  enabled_plugins:
+    - rabbitmq_management
+    - rabbitmq_prometheus
+  rabbitmq:
+    cluster_formation:
+      peer_discovery_backend: rabbit_peer_discovery_dns
+      dns:
+        hostname: rabbitmq.openstack.svc.cluster.local
+
+# https://www.rabbitmq.com/blog/2025/04/04/new-k8s-peer-discovery
+# in old versions of rabbitmq (below 4.1), the k8s peer discovery plugin
+# wants to talk to the kube-api-server to figure out which rabbitmq nodes exist
+# this is fixed in later versions (they just guess the name of other nodes based on
+# the sts numerical suffix), but openstack-helm seems to still use 3.x
+# so until we have that, we are using dns based peer discovery
+network_policy:
+  rabbitmq:
+    egress:
+      - to:
+          - podSelector:
+              matchLabels:
+                application: rabbitmq
+        ports:
+          - protocol: TCP
+            port: 4369
+          - protocol: TCP
+            port: 25672
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: kube-system
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
