@@ -845,7 +845,7 @@ spec:
       resources:
         requests:
           storage: 768Mi
-      storageClassName: general
+      storageClassName: cephfs-2026
 ---
 apiVersion: batch/v1
 kind: Job
