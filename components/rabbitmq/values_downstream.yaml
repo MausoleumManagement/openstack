@@ -1,2 +1,12 @@
 volume:
   class_name: cephfs-2026
+
+# TODO: once we have an idea how we want the infrastructure to look like
+# we should properly use the node  selectors
+# atm we are using a default tag that all nodes get
+# by default, this would be openstack-control-plane=enabled
+labels:
+  server:
+    node_selector_key: kubernetes.io/os
+    node_selector_value: linux
+

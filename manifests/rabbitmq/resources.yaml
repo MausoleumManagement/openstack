@@ -817,7 +817,7 @@ spec:
         - mountPath: /var/lib/rabbitmq
           name: rabbitmq-data
       nodeSelector:
-        openstack-control-plane: enabled
+        kubernetes.io/os: linux
       securityContext:
         runAsUser: 999
       serviceAccountName: rabbitmq-rabbitmq
