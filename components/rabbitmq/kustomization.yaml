@@ -17,3 +17,4 @@ resources:
   - namespace.yaml
 patches:
   - path: patch-delete-secrets.yaml
+  - path: patch-delete-helm-job.yaml
