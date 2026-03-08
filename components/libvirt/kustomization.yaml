@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+  # https://opendev.org/openstack/openstack-helm
+namespace: openstack
+helmCharts:
+  - name: libvirt
+    namespace: openstack
+    releaseName: libvirt
+    repo: https://tarballs.opendev.org/openstack/openstack-helm
+    valuesFile: values_upstream.yaml
+    additionalValuesFiles:
+      - values_downstream.yaml
+    version: 2025.2.7+692ade4c7
+    skipTests: true
+resources:
+  - externalsecrets.yaml
+  - namespace.yaml
+patches:
+  - path: patch-delete-secrets.yaml

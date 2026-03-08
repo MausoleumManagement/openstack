@@ -1,0 +1,849 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openstack
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: libvirt
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: libvirt-openstack-libvirt
+  namespace: openstack
+rules:
+- apiGroups:
+  - ""
+  - extensions
+  - batch
+  - apps
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: libvirt-openstack-libvirt
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: libvirt-openstack-libvirt
+subjects:
+- kind: ServiceAccount
+  name: libvirt
+  namespace: openstack
+---
+apiVersion: v1
+data:
+  ceph-admin-keyring.sh: "#!/bin/bash\n\n\n\nset -ex\nexport HOME=/tmp\n\ncat > /etc/ceph/ceph.client.admin.keyring
+    << EOF\n[client.admin]\n    key = $(cat /tmp/client-keyring)\nEOF\n\nexit 0\n
+    \ \n"
+  ceph-keyring.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+    export HOME=/tmp
+
+    cp -fv /etc/ceph/ceph.conf.template /etc/ceph/ceph.conf
+
+    KEYRING=/etc/ceph/ceph.client.${CEPH_CINDER_USER}.keyring
+    if ! [ "x${CEPH_CINDER_USER}" == "xadmin" ]; then
+      #
+      # If user is not client.admin, check if it already exists. If not create
+      # the user. If the cephx user does not exist make sure the caps are set
+      # according to best practices
+      #
+      if USERINFO=$(ceph auth get client.${CEPH_CINDER_USER}); then
+        echo "Cephx user client.${CEPH_CINDER_USER} already exist"
+        echo "Update user client.${CEPH_CINDER_USER} caps"
+        ceph auth caps client.${CEPH_CINDER_USER} \
+           mon "profile rbd" \
+           osd "profile rbd"
+        ceph auth get client.${CEPH_CINDER_USER} -o ${KEYRING}
+      else
+        echo "Creating Cephx user client.${CEPH_CINDER_USER}"
+        ceph auth get-or-create client.${CEPH_CINDER_USER} \
+          mon "profile rbd" \
+          osd "profile rbd" \
+          -o ${KEYRING}
+      fi
+      rm -f /etc/ceph/ceph.client.admin.keyring
+    fi
+  init-dynamic-options.sh: |
+    #!/bin/bash
+    set -ex
+
+    LIBVIRT_CONF_PATH=/tmp/pod-shared/libvirtd.conf
+    LISTEN_IP_ADDRESS=127.0.0.1
+
+    if [[ -z $LISTEN_IP_ADDRESS ]]; then
+        echo "LISTEN_IP_ADDRESS is not set."
+        exit 1
+    fi
+
+    tee > ${LIBVIRT_CONF_PATH} << EOF
+
+    auth_tcp = "none"
+    auth_unix_rw = "none"
+    ca_file = "/etc/pki/CA/cacert.pem"
+    cert_file = "/etc/pki/libvirt/servercert.pem"
+    key_file = "/etc/pki/libvirt/private/serverkey.pem"
+    listen_addr = "${LISTEN_IP_ADDRESS}"
+    listen_tcp = 1
+    listen_tls = 0
+    log_level = 3
+    log_outputs = "1:file:/var/log/libvirt/libvirtd.log"
+    EOF
+  libvirt-init-modules.sh: "#!/bin/bash\n\nset -ex\nexport HOME=/tmp\nKVM_QEMU_CONF_HOST=\"/etc/modprobe.d_host/qemu-system-x86.conf\"\n\nif
+    [[ ! -f \"${KVM_QEMU_CONF_HOST}\" ]]; then\n  if grep vmx /proc/cpuinfo; then\n
+    \   cat << EOF > ${KVM_QEMU_CONF_HOST}\noptions kvm_intel nested=1\noptions kvm_intel
+    enable_apicv=1\noptions kvm_intel ept=1\nEOF\n    modprobe -r kvm_intel || true\n
+    \   modprobe kvm_intel nested=1\n  elif grep svm /proc/cpuinfo; then\n    cat
+    << EOF > ${KVM_QEMU_CONF_HOST}\noptions kvm_amd nested=1\nEOF\n    modprobe -r
+    kvm_amd || true\n    modprobe kvm_amd nested=1\n  else\n    echo \"Nested virtualization
+    is not supported\"\n  fi\nfi  \n"
+  libvirt.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+
+    # NOTE(mnaser): This will move the VNC certificates into the expected location.
+    if [ -f /tmp/vnc.crt ]; then
+      mkdir -p /etc/pki/libvirt-vnc
+      mv /tmp/vnc.key /etc/pki/libvirt-vnc/server-key.pem
+      mv /tmp/vnc.crt /etc/pki/libvirt-vnc/server-cert.pem
+      mv /tmp/vnc-ca.crt /etc/pki/libvirt-vnc/ca-cert.pem
+    fi
+
+    if [ -n "$(cat /proc/*/comm 2>/dev/null | grep -w libvirtd)" ]; then
+      set +x
+      for proc in $(ls /proc/*/comm 2>/dev/null); do
+        if [ "x$(cat $proc 2>/dev/null | grep -w libvirtd)" == "xlibvirtd" ]; then
+          set -x
+          libvirtpid=$(echo $proc | cut -f 3 -d '/')
+          echo "WARNING: libvirtd daemon already running on host" 1>&2
+          echo "$(cat "/proc/${libvirtpid}/status" 2>/dev/null | grep State)" 1>&2
+          kill -9 "$libvirtpid" || true
+          set +x
+        fi
+      done
+      set -x
+    fi
+
+    rm -f /var/run/libvirtd.pid
+
+    if [[ -c /dev/kvm ]]; then
+        chmod 660 /dev/kvm
+        chown root:kvm /dev/kvm
+    fi
+
+    #Setup Cgroups to use when breaking out of Kubernetes defined groups
+    CGROUPS=""
+    for CGROUP in blkio cpu devices freezer hugetlb memory net_cls perf_event rdma misc pids; do
+      if [ -d /sys/fs/cgroup/${CGROUP} ] || grep -w $CGROUP /sys/fs/cgroup/cgroup.controllers; then
+        CGROUPS+="${CGROUP},"
+      fi
+    done
+    cgcreate -g ${CGROUPS%,}:/osh-libvirt
+
+    # We assume that if hugepage count > 0, then hugepages should be exposed to libvirt/qemu
+    hp_count="$(cat /proc/meminfo | grep HugePages_Total | tr -cd '[:digit:]')"
+    if [ 0"$hp_count" -gt 0 ]; then
+
+      echo "INFO: Detected hugepage count of '$hp_count'. Enabling hugepage settings for libvirt/qemu."
+
+      # Enable KVM hugepages for QEMU
+      if [ -n "$(grep KVM_HUGEPAGES=0 /etc/default/qemu-kvm)" ]; then
+        sed -i 's/.*KVM_HUGEPAGES=0.*/KVM_HUGEPAGES=1/g' /etc/default/qemu-kvm
+      else
+        echo KVM_HUGEPAGES=1 >> /etc/default/qemu-kvm
+      fi
+
+      # Ensure that the hugepage mount location is available/mapped inside the
+      # container. This assumes use of the default ubuntu dev-hugepages.mount
+      # systemd unit which mounts hugepages at this location.
+      if [ ! -d /dev/hugepages ]; then
+        echo "ERROR: Hugepages configured in kernel, but libvirtd container cannot access /dev/hugepages"
+        exit 1
+      fi
+    fi
+
+    if [ -n "${LIBVIRT_CEPH_CINDER_SECRET_UUID}" ] || [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+
+      cgexec -g ${CGROUPS%,}:/osh-libvirt systemd-run --scope --slice=system libvirtd --listen &
+
+      tmpsecret=$(mktemp --suffix .xml)
+      if [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+        tmpsecret2=$(mktemp --suffix .xml)
+      fi
+      function cleanup {
+        rm -f "${tmpsecret}"
+        if [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+          rm -f "${tmpsecret2}"
+        fi
+      }
+      trap cleanup EXIT
+
+      # Wait for the libvirtd is up
+      TIMEOUT=60
+      while [[ ! -f /var/run/libvirtd.pid ]]; do
+        if [[ ${TIMEOUT} -gt 0 ]]; then
+          let TIMEOUT-=1
+          sleep 1
+        else
+          echo "ERROR: libvirt did not start in time (pid file missing)"
+          exit 1
+        fi
+      done
+
+      # Even though we see the pid file the socket immediately (this is
+      # needed for virsh)
+      TIMEOUT=10
+      while [[ ! -e /var/run/libvirt/libvirt-sock ]]; do
+        if [[ ${TIMEOUT} -gt 0 ]]; then
+          let TIMEOUT-=1
+          sleep 1
+        else
+          echo "ERROR: libvirt did not start in time (socket missing)"
+          exit 1
+        fi
+      done
+
+      function create_virsh_libvirt_secret {
+        sec_user=$1
+        sec_uuid=$2
+        sec_ceph_keyring=$3
+        cat > ${tmpsecret} <<EOF
+    <secret ephemeral='no' private='no'>
+      <uuid>${sec_uuid}</uuid>
+      <usage type='ceph'>
+        <name>client.${sec_user}. secret</name>
+      </usage>
+    </secret>
+    EOF
+        virsh secret-define --file ${tmpsecret}
+        virsh secret-set-value --secret "${sec_uuid}" --base64 "${sec_ceph_keyring}"
+      }
+
+      if [ -z "${CEPH_CINDER_KEYRING}" ] && [ -n "${CEPH_CINDER_USER}" ] ; then
+        CEPH_CINDER_KEYRING=$(awk '/key/{print $3}' /etc/ceph/ceph.client.${CEPH_CINDER_USER}.keyring)
+      fi
+      if [ -n "${CEPH_CINDER_USER}" ] ; then
+        create_virsh_libvirt_secret ${CEPH_CINDER_USER} ${LIBVIRT_CEPH_CINDER_SECRET_UUID} ${CEPH_CINDER_KEYRING}
+      fi
+
+      if [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+        EXTERNAL_CEPH_CINDER_KEYRING=$(cat /tmp/external-ceph-client-keyring)
+        create_virsh_libvirt_secret ${EXTERNAL_CEPH_CINDER_USER} ${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID} ${EXTERNAL_CEPH_CINDER_KEYRING}
+      fi
+
+      cleanup
+
+      # stop libvirtd; we needed it up to create secrets
+      LIBVIRTD_PID=$(cat /var/run/libvirtd.pid)
+      kill $LIBVIRTD_PID
+      tail --pid=$LIBVIRTD_PID -f /dev/null
+
+    fi
+
+    # NOTE(vsaienko): changing CGROUP is required as restart of the pod will cause domains restarts
+    cgexec -g ${CGROUPS%,}:/osh-libvirt systemd-run --scope --slice=system libvirtd --listen
+kind: ConfigMap
+metadata:
+  name: libvirt-bin
+---
+apiVersion: v1
+data:
+  ceph-admin-keyring.sh: "#!/bin/bash\n\n\n\nset -ex\nexport HOME=/tmp\n\ncat > /etc/ceph/ceph.client.admin.keyring
+    << EOF\n[client.admin]\n    key = $(cat /tmp/client-keyring)\nEOF\n\nexit 0\n
+    \ \n"
+  ceph-keyring.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+    export HOME=/tmp
+
+    cp -fv /etc/ceph/ceph.conf.template /etc/ceph/ceph.conf
+
+    KEYRING=/etc/ceph/ceph.client.${CEPH_CINDER_USER}.keyring
+    if ! [ "x${CEPH_CINDER_USER}" == "xadmin" ]; then
+      #
+      # If user is not client.admin, check if it already exists. If not create
+      # the user. If the cephx user does not exist make sure the caps are set
+      # according to best practices
+      #
+      if USERINFO=$(ceph auth get client.${CEPH_CINDER_USER}); then
+        echo "Cephx user client.${CEPH_CINDER_USER} already exist"
+        echo "Update user client.${CEPH_CINDER_USER} caps"
+        ceph auth caps client.${CEPH_CINDER_USER} \
+           mon "profile rbd" \
+           osd "profile rbd"
+        ceph auth get client.${CEPH_CINDER_USER} -o ${KEYRING}
+      else
+        echo "Creating Cephx user client.${CEPH_CINDER_USER}"
+        ceph auth get-or-create client.${CEPH_CINDER_USER} \
+          mon "profile rbd" \
+          osd "profile rbd" \
+          -o ${KEYRING}
+      fi
+      rm -f /etc/ceph/ceph.client.admin.keyring
+    fi
+  init-dynamic-options.sh: |
+    #!/bin/bash
+    set -ex
+
+    LIBVIRT_CONF_PATH=/tmp/pod-shared/libvirtd.conf
+    LISTEN_IP_ADDRESS=127.0.0.1
+
+    if [[ -z $LISTEN_IP_ADDRESS ]]; then
+        echo "LISTEN_IP_ADDRESS is not set."
+        exit 1
+    fi
+
+    tee > ${LIBVIRT_CONF_PATH} << EOF
+
+    auth_tcp = "none"
+    auth_unix_rw = "none"
+    ca_file = "/etc/pki/CA/cacert.pem"
+    cert_file = "/etc/pki/libvirt/servercert.pem"
+    key_file = "/etc/pki/libvirt/private/serverkey.pem"
+    listen_addr = "${LISTEN_IP_ADDRESS}"
+    listen_tcp = 1
+    listen_tls = 0
+    log_level = 3
+    log_outputs = "1:file:/var/log/libvirt/libvirtd.log"
+    EOF
+  libvirt-init-modules.sh: "#!/bin/bash\n\nset -ex\nexport HOME=/tmp\nKVM_QEMU_CONF_HOST=\"/etc/modprobe.d_host/qemu-system-x86.conf\"\n\nif
+    [[ ! -f \"${KVM_QEMU_CONF_HOST}\" ]]; then\n  if grep vmx /proc/cpuinfo; then\n
+    \   cat << EOF > ${KVM_QEMU_CONF_HOST}\noptions kvm_intel nested=1\noptions kvm_intel
+    enable_apicv=1\noptions kvm_intel ept=1\nEOF\n    modprobe -r kvm_intel || true\n
+    \   modprobe kvm_intel nested=1\n  elif grep svm /proc/cpuinfo; then\n    cat
+    << EOF > ${KVM_QEMU_CONF_HOST}\noptions kvm_amd nested=1\nEOF\n    modprobe -r
+    kvm_amd || true\n    modprobe kvm_amd nested=1\n  else\n    echo \"Nested virtualization
+    is not supported\"\n  fi\nfi  \n"
+  libvirt.sh: |
+    #!/bin/bash
+
+
+
+    set -ex
+
+    # NOTE(mnaser): This will move the VNC certificates into the expected location.
+    if [ -f /tmp/vnc.crt ]; then
+      mkdir -p /etc/pki/libvirt-vnc
+      mv /tmp/vnc.key /etc/pki/libvirt-vnc/server-key.pem
+      mv /tmp/vnc.crt /etc/pki/libvirt-vnc/server-cert.pem
+      mv /tmp/vnc-ca.crt /etc/pki/libvirt-vnc/ca-cert.pem
+    fi
+
+    if [ -n "$(cat /proc/*/comm 2>/dev/null | grep -w libvirtd)" ]; then
+      set +x
+      for proc in $(ls /proc/*/comm 2>/dev/null); do
+        if [ "x$(cat $proc 2>/dev/null | grep -w libvirtd)" == "xlibvirtd" ]; then
+          set -x
+          libvirtpid=$(echo $proc | cut -f 3 -d '/')
+          echo "WARNING: libvirtd daemon already running on host" 1>&2
+          echo "$(cat "/proc/${libvirtpid}/status" 2>/dev/null | grep State)" 1>&2
+          kill -9 "$libvirtpid" || true
+          set +x
+        fi
+      done
+      set -x
+    fi
+
+    rm -f /var/run/libvirtd.pid
+
+    if [[ -c /dev/kvm ]]; then
+        chmod 660 /dev/kvm
+        chown root:kvm /dev/kvm
+    fi
+
+    #Setup Cgroups to use when breaking out of Kubernetes defined groups
+    CGROUPS=""
+    for CGROUP in blkio cpu devices freezer hugetlb memory net_cls perf_event rdma misc pids; do
+      if [ -d /sys/fs/cgroup/${CGROUP} ] || grep -w $CGROUP /sys/fs/cgroup/cgroup.controllers; then
+        CGROUPS+="${CGROUP},"
+      fi
+    done
+    cgcreate -g ${CGROUPS%,}:/osh-libvirt
+
+    # We assume that if hugepage count > 0, then hugepages should be exposed to libvirt/qemu
+    hp_count="$(cat /proc/meminfo | grep HugePages_Total | tr -cd '[:digit:]')"
+    if [ 0"$hp_count" -gt 0 ]; then
+
+      echo "INFO: Detected hugepage count of '$hp_count'. Enabling hugepage settings for libvirt/qemu."
+
+      # Enable KVM hugepages for QEMU
+      if [ -n "$(grep KVM_HUGEPAGES=0 /etc/default/qemu-kvm)" ]; then
+        sed -i 's/.*KVM_HUGEPAGES=0.*/KVM_HUGEPAGES=1/g' /etc/default/qemu-kvm
+      else
+        echo KVM_HUGEPAGES=1 >> /etc/default/qemu-kvm
+      fi
+
+      # Ensure that the hugepage mount location is available/mapped inside the
+      # container. This assumes use of the default ubuntu dev-hugepages.mount
+      # systemd unit which mounts hugepages at this location.
+      if [ ! -d /dev/hugepages ]; then
+        echo "ERROR: Hugepages configured in kernel, but libvirtd container cannot access /dev/hugepages"
+        exit 1
+      fi
+    fi
+
+    if [ -n "${LIBVIRT_CEPH_CINDER_SECRET_UUID}" ] || [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+
+      cgexec -g ${CGROUPS%,}:/osh-libvirt systemd-run --scope --slice=system libvirtd --listen &
+
+      tmpsecret=$(mktemp --suffix .xml)
+      if [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+        tmpsecret2=$(mktemp --suffix .xml)
+      fi
+      function cleanup {
+        rm -f "${tmpsecret}"
+        if [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+          rm -f "${tmpsecret2}"
+        fi
+      }
+      trap cleanup EXIT
+
+      # Wait for the libvirtd is up
+      TIMEOUT=60
+      while [[ ! -f /var/run/libvirtd.pid ]]; do
+        if [[ ${TIMEOUT} -gt 0 ]]; then
+          let TIMEOUT-=1
+          sleep 1
+        else
+          echo "ERROR: libvirt did not start in time (pid file missing)"
+          exit 1
+        fi
+      done
+
+      # Even though we see the pid file the socket immediately (this is
+      # needed for virsh)
+      TIMEOUT=10
+      while [[ ! -e /var/run/libvirt/libvirt-sock ]]; do
+        if [[ ${TIMEOUT} -gt 0 ]]; then
+          let TIMEOUT-=1
+          sleep 1
+        else
+          echo "ERROR: libvirt did not start in time (socket missing)"
+          exit 1
+        fi
+      done
+
+      function create_virsh_libvirt_secret {
+        sec_user=$1
+        sec_uuid=$2
+        sec_ceph_keyring=$3
+        cat > ${tmpsecret} <<EOF
+    <secret ephemeral='no' private='no'>
+      <uuid>${sec_uuid}</uuid>
+      <usage type='ceph'>
+        <name>client.${sec_user}. secret</name>
+      </usage>
+    </secret>
+    EOF
+        virsh secret-define --file ${tmpsecret}
+        virsh secret-set-value --secret "${sec_uuid}" --base64 "${sec_ceph_keyring}"
+      }
+
+      if [ -z "${CEPH_CINDER_KEYRING}" ] && [ -n "${CEPH_CINDER_USER}" ] ; then
+        CEPH_CINDER_KEYRING=$(awk '/key/{print $3}' /etc/ceph/ceph.client.${CEPH_CINDER_USER}.keyring)
+      fi
+      if [ -n "${CEPH_CINDER_USER}" ] ; then
+        create_virsh_libvirt_secret ${CEPH_CINDER_USER} ${LIBVIRT_CEPH_CINDER_SECRET_UUID} ${CEPH_CINDER_KEYRING}
+      fi
+
+      if [ -n "${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID}" ] ; then
+        EXTERNAL_CEPH_CINDER_KEYRING=$(cat /tmp/external-ceph-client-keyring)
+        create_virsh_libvirt_secret ${EXTERNAL_CEPH_CINDER_USER} ${LIBVIRT_EXTERNAL_CEPH_CINDER_SECRET_UUID} ${EXTERNAL_CEPH_CINDER_KEYRING}
+      fi
+
+      cleanup
+
+      # stop libvirtd; we needed it up to create secrets
+      LIBVIRTD_PID=$(cat /var/run/libvirtd.pid)
+      kill $LIBVIRTD_PID
+      tail --pid=$LIBVIRTD_PID -f /dev/null
+
+    fi
+
+    # NOTE(vsaienko): changing CGROUP is required as restart of the pod will cause domains restarts
+    cgexec -g ${CGROUPS%,}:/osh-libvirt systemd-run --scope --slice=system libvirtd --listen
+kind: ConfigMap
+metadata:
+  name: libvirt-libvirt-default-bin
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  annotations:
+    openstackhelm.openstack.org/release_uuid: ""
+  labels:
+    app.kubernetes.io/component: libvirt
+    app.kubernetes.io/instance: libvirt
+    app.kubernetes.io/name: libvirt
+    application: libvirt
+    component: libvirt
+    release_group: libvirt
+  name: libvirt-libvirt-default
+spec:
+  minReadySeconds: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: libvirt
+      app.kubernetes.io/instance: libvirt
+      app.kubernetes.io/name: libvirt
+      application: libvirt
+      component: libvirt
+      release_group: libvirt
+  template:
+    metadata:
+      annotations:
+        configmap-bin-hash: 07e5e83f331e7dc2951c20e07dce569ea1442af913cd00755bf57ff85386f158
+        configmap-etc-hash: c28e65cdca6dba2e1cb4ba5d24f858f9aa4ff86afc611628f9d0445d2098faf4
+        openstackhelm.openstack.org/release_uuid: ""
+      labels:
+        app.kubernetes.io/component: libvirt
+        app.kubernetes.io/instance: libvirt
+        app.kubernetes.io/name: libvirt
+        application: libvirt
+        component: libvirt
+        release_group: libvirt
+    spec:
+      containers:
+      - command:
+        - /tmp/libvirt.sh
+        env:
+        - name: CEPH_CINDER_USER
+          value: cinder
+        - name: LIBVIRT_CEPH_CINDER_SECRET_UUID
+          value: 457eb676-33da-42ec-9a8c-9293d545c337
+        image: quay.io/airshipit/libvirt:2025.2-ubuntu_noble
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - bash
+              - -c
+              - kill $(cat /var/run/libvirtd.pid)
+        livenessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - /usr/bin/virsh connect
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 5
+        name: libvirt
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - /usr/bin/virsh connect
+          initialDelaySeconds: 15
+          periodSeconds: 60
+          timeoutSeconds: 5
+        securityContext:
+          privileged: true
+          readOnlyRootFilesystem: false
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /tmp/libvirt.sh
+          name: libvirt-bin
+          readOnly: true
+          subPath: libvirt.sh
+        - mountPath: /etc/libvirt/libvirtd.conf
+          name: pod-shared
+          readOnly: true
+          subPath: libvirtd.conf
+        - mountPath: /etc/libvirt/qemu.conf
+          name: libvirt-etc
+          readOnly: true
+          subPath: qemu.conf
+        - mountPath: /etc/libvirt/qemu
+          name: etc-libvirt-qemu
+        - mountPath: /lib/modules
+          name: libmodules
+          readOnly: true
+        - mountPath: /var/lib/libvirt
+          mountPropagation: Bidirectional
+          name: var-lib-libvirt
+        - mountPath: /var/lib/nova
+          mountPropagation: Bidirectional
+          name: var-lib-nova
+        - mountPath: /run
+          name: run
+        - mountPath: /dev
+          name: dev
+        - mountPath: /sys/fs/cgroup
+          name: cgroup
+        - mountPath: /var/log/libvirt
+          name: logs
+        - mountPath: /etc/machine-id
+          name: machine-id
+          readOnly: true
+        - mountPath: /etc/ceph
+          mountPropagation: Bidirectional
+          name: etcceph
+        - mountPath: /tmp/client-keyring
+          name: ceph-keyring
+          readOnly: true
+          subPath: key
+      dnsPolicy: ClusterFirstWithHostNet
+      hostIPC: true
+      hostNetwork: true
+      hostPID: true
+      initContainers:
+      - command:
+        - kubernetes-entrypoint
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: INTERFACE_NAME
+          value: eth0
+        - name: PATH
+          value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/
+        - name: DEPENDENCY_SERVICE
+          value: ""
+        - name: DEPENDENCY_DAEMONSET
+          value: ""
+        - name: DEPENDENCY_CONTAINER
+          value: ""
+        - name: DEPENDENCY_POD_JSON
+          value: '[{"labels":{"application":"neutron","component":"neutron-ovs-agent"},"requireSameNode":true}]'
+        - name: DEPENDENCY_CUSTOM_RESOURCE
+          value: ""
+        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_jammy
+        imagePullPolicy: IfNotPresent
+        name: init
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsUser: 65534
+        volumeMounts: null
+      - command:
+        - /tmp/init-dynamic-options.sh
+        image: quay.io/airshipit/libvirt:2025.2-ubuntu_noble
+        imagePullPolicy: IfNotPresent
+        name: init-dynamic-options
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        terminationMessagePath: /var/log/termination-log
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /tmp/pod-shared
+          name: pod-shared
+        - mountPath: /tmp/init-dynamic-options.sh
+          name: libvirt-bin
+          readOnly: true
+          subPath: init-dynamic-options.sh
+      - command:
+        - /tmp/ceph-admin-keyring.sh
+        image: quay.io/airshipit/ceph-config-helper:ubuntu_jammy_20.2.0-1-20260116
+        imagePullPolicy: IfNotPresent
+        name: ceph-admin-keyring-placement
+        securityContext:
+          readOnlyRootFilesystem: false
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /etc/ceph
+          name: etcceph
+        - mountPath: /tmp/ceph-admin-keyring.sh
+          name: libvirt-bin
+          readOnly: true
+          subPath: ceph-admin-keyring.sh
+        - mountPath: /tmp/client-keyring
+          name: ceph-keyring
+          readOnly: true
+          subPath: key
+      - command:
+        - /tmp/ceph-keyring.sh
+        env:
+        - name: CEPH_CINDER_USER
+          value: cinder
+        - name: LIBVIRT_CEPH_CINDER_SECRET_UUID
+          value: 457eb676-33da-42ec-9a8c-9293d545c337
+        image: quay.io/airshipit/ceph-config-helper:ubuntu_jammy_20.2.0-1-20260116
+        imagePullPolicy: IfNotPresent
+        name: ceph-keyring-placement
+        securityContext:
+          readOnlyRootFilesystem: false
+        volumeMounts:
+        - mountPath: /tmp
+          name: pod-tmp
+        - mountPath: /etc/ceph
+          name: etcceph
+        - mountPath: /tmp/ceph-keyring.sh
+          name: libvirt-bin
+          readOnly: true
+          subPath: ceph-keyring.sh
+        - mountPath: /etc/ceph/ceph.conf.template
+          name: ceph-etc
+          readOnly: true
+          subPath: ceph.conf
+      nodeSelector:
+        openstack-compute-node: enabled
+      securityContext:
+        runAsUser: 0
+      serviceAccountName: libvirt
+      volumes:
+      - emptyDir: {}
+        name: pod-tmp
+      - configMap:
+          defaultMode: 365
+          name: libvirt-libvirt-default-bin
+        name: libvirt-bin
+      - name: libvirt-etc
+        secret:
+          defaultMode: 292
+          secretName: libvirt-libvirt-default-etc
+      - hostPath:
+          path: /var/lib/openstack-helm/compute/libvirt
+        name: etcceph
+      - configMap:
+          defaultMode: 292
+          name: ceph-etc
+        name: ceph-etc
+      - name: ceph-keyring
+        secret:
+          secretName: pvc-ceph-client-key
+      - hostPath:
+          path: /lib/modules
+        name: libmodules
+      - hostPath:
+          path: /var/lib/libvirt
+        name: var-lib-libvirt
+      - hostPath:
+          path: /var/lib/nova
+        name: var-lib-nova
+      - hostPath:
+          path: /run
+        name: run
+      - hostPath:
+          path: /dev
+        name: dev
+      - hostPath:
+          path: /var/log/libvirt
+        name: logs
+      - hostPath:
+          path: /sys/fs/cgroup
+        name: cgroup
+      - hostPath:
+          path: /etc/machine-id
+        name: machine-id
+      - hostPath:
+          path: /etc/libvirt/qemu
+        name: etc-libvirt-qemu
+      - hostPath:
+          path: /etc/modprobe.d
+        name: etc-modprobe-d
+      - hostPath:
+          path: /
+          type: Directory
+        name: host-rootfs
+      - emptyDir: {}
+        name: pod-shared
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: libvirt-etc
+  namespace: openstack
+spec:
+  data:
+  - remoteRef:
+      key: kv/underdark/openstack/libvirt-qemu.conf
+      property: qemu.conf
+    secretKey: qemu.conf
+  refreshInterval: 1h0m0s
+  refreshPolicy: Periodic
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: openbao-backend
+  target:
+    name: libvirt-etc
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: libvirt-libvirt-default-etc
+  namespace: openstack
+spec:
+  data:
+  - remoteRef:
+      key: kv/underdark/openstack/libvirt-qemu.conf
+      property: qemu.conf
+    secretKey: qemu.conf
+  refreshInterval: 1h0m0s
+  refreshPolicy: Periodic
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: openbao-backend
+  target:
+    name: libvirt-libvirt-default-etc
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: libvirt-netpol
+  namespace: openstack
+spec:
+  egress:
+  - ports:
+    - port: 5000
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          name: docker-registry
+  - ports: null
+    to:
+    - namespaceSelector:
+        matchLabels:
+          name: oci-image-registry
+  - {}
+  ingress:
+  - {}
+  podSelector:
+    matchLabels:
+      application: libvirt
+  policyTypes:
+  - Egress
+  - Ingress
