@@ -121,9 +121,9 @@ data:
     # NOTE(mnaser): This will move the VNC certificates into the expected location.
     if [ -f /tmp/vnc.crt ]; then
       mkdir -p /etc/pki/libvirt-vnc
-      mv /tmp/vnc.key /etc/pki/libvirt-vnc/server-key.pem
-      mv /tmp/vnc.crt /etc/pki/libvirt-vnc/server-cert.pem
-      mv /tmp/vnc-ca.crt /etc/pki/libvirt-vnc/ca-cert.pem
+      cp /tmp/vnc.key /etc/pki/libvirt-vnc/server-key.pem
+      cp /tmp/vnc.crt /etc/pki/libvirt-vnc/server-cert.pem
+      cp /tmp/vnc-ca.crt /etc/pki/libvirt-vnc/ca-cert.pem
     fi
 
     if [ -n "$(cat /proc/*/comm 2>/dev/null | grep -w libvirtd)" ]; then
@@ -344,9 +344,9 @@ data:
     # NOTE(mnaser): This will move the VNC certificates into the expected location.
     if [ -f /tmp/vnc.crt ]; then
       mkdir -p /etc/pki/libvirt-vnc
-      mv /tmp/vnc.key /etc/pki/libvirt-vnc/server-key.pem
-      mv /tmp/vnc.crt /etc/pki/libvirt-vnc/server-cert.pem
-      mv /tmp/vnc-ca.crt /etc/pki/libvirt-vnc/ca-cert.pem
+      cp /tmp/vnc.key /etc/pki/libvirt-vnc/server-key.pem
+      cp /tmp/vnc.crt /etc/pki/libvirt-vnc/server-cert.pem
+      cp /tmp/vnc-ca.crt /etc/pki/libvirt-vnc/ca-cert.pem
     fi
 
     if [ -n "$(cat /proc/*/comm 2>/dev/null | grep -w libvirtd)" ]; then
@@ -512,7 +512,7 @@ spec:
   template:
     metadata:
       annotations:
-        configmap-bin-hash: 07e5e83f331e7dc2951c20e07dce569ea1442af913cd00755bf57ff85386f158
+        configmap-bin-hash: 5fccaaa328cc462c9988d0947d08040ca8e9af4c76d4f72f8ccd859d222c73ec
         configmap-etc-hash: c28e65cdca6dba2e1cb4ba5d24f858f9aa4ff86afc611628f9d0445d2098faf4
         openstackhelm.openstack.org/release_uuid: ""
       labels:
