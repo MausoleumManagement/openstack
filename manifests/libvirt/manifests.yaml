@@ -20,6 +20,7 @@ rules:
   - extensions
   - batch
   - apps
+  - discovery.k8s.io
   resources:
   - pods
   verbs:
@@ -262,6 +263,7 @@ data:
 kind: ConfigMap
 metadata:
   name: libvirt-bin
+  namespace: openstack
 ---
 apiVersion: v1
 data:
@@ -485,6 +487,7 @@ data:
 kind: ConfigMap
 metadata:
   name: libvirt-libvirt-default-bin
+  namespace: openstack
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -499,6 +502,7 @@ metadata:
     component: libvirt
     release_group: libvirt
   name: libvirt-libvirt-default
+  namespace: openstack
 spec:
   minReadySeconds: 0
   selector:
@@ -638,7 +642,7 @@ spec:
           value: '[{"labels":{"application":"neutron","component":"neutron-ovs-agent"},"requireSameNode":true}]'
         - name: DEPENDENCY_CUSTOM_RESOURCE
           value: ""
-        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_jammy
+        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_noble
         imagePullPolicy: IfNotPresent
         name: init
         securityContext:
@@ -671,7 +675,7 @@ spec:
           subPath: init-dynamic-options.sh
       - command:
         - /tmp/ceph-admin-keyring.sh
-        image: quay.io/airshipit/ceph-config-helper:ubuntu_jammy_20.2.0-1-20260116
+        image: quay.io/airshipit/ceph-config-helper:ubuntu_jammy_20.2.1-1-20260407
         imagePullPolicy: IfNotPresent
         name: ceph-admin-keyring-placement
         securityContext:
@@ -696,7 +700,7 @@ spec:
           value: cinder
         - name: LIBVIRT_CEPH_CINDER_SECRET_UUID
           value: 457eb676-33da-42ec-9a8c-9293d545c337
-        image: quay.io/airshipit/ceph-config-helper:ubuntu_jammy_20.2.0-1-20260116
+        image: quay.io/airshipit/ceph-config-helper:ubuntu_jammy_20.2.1-1-20260407
         imagePullPolicy: IfNotPresent
         name: ceph-keyring-placement
         securityContext:
