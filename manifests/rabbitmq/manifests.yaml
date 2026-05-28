@@ -32,9 +32,11 @@ rules:
   - extensions
   - batch
   - apps
+  - discovery.k8s.io
   resources:
   - services
   - endpoints
+  - endpointslices
   verbs:
   - get
   - list
@@ -50,9 +52,11 @@ rules:
   - extensions
   - batch
   - apps
+  - discovery.k8s.io
   resources:
   - services
   - endpoints
+  - endpointslices
   - jobs
   - pods
   verbs:
@@ -474,6 +478,7 @@ data:
 kind: ConfigMap
 metadata:
   name: rabbitmq-rabbitmq-bin
+  namespace: openstack
 ---
 apiVersion: v1
 data:
@@ -501,6 +506,7 @@ data:
 kind: ConfigMap
 metadata:
   name: rabbitmq-rabbitmq-etc
+  namespace: openstack
 ---
 apiVersion: v1
 kind: Service
@@ -515,6 +521,7 @@ metadata:
     component: server
     release_group: rabbitmq
   name: rabbitmq
+  namespace: openstack
 spec:
   clusterIP: None
   ports:
@@ -538,6 +545,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: rabbitmq-mgr-7b1733
+  namespace: openstack
 spec:
   ports:
   - name: http
@@ -560,6 +568,7 @@ metadata:
     component: server
     release_group: rabbitmq
   name: rabbitmq-rabbitmq
+  namespace: openstack
 spec:
   podManagementPolicy: Parallel
   replicas: 2
@@ -737,7 +746,7 @@ spec:
           value: ""
         - name: DEPENDENCY_CUSTOM_RESOURCE
           value: ""
-        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_jammy
+        image: quay.io/airshipit/kubernetes-entrypoint:latest-ubuntu_noble
         imagePullPolicy: IfNotPresent
         name: init
         securityContext:
@@ -901,6 +910,7 @@ metadata:
     haproxy.org/path-rewrite: /
     nginx.ingress.kubernetes.io/rewrite-target: /
   name: rabbitmq-mgr-7b1733
+  namespace: openstack
 spec:
   ingressClassName: ingress-openstack
   rules:
