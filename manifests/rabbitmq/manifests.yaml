@@ -478,7 +478,6 @@ data:
 kind: ConfigMap
 metadata:
   name: rabbitmq-rabbitmq-bin
-  namespace: openstack
 ---
 apiVersion: v1
 data:
@@ -506,7 +505,6 @@ data:
 kind: ConfigMap
 metadata:
   name: rabbitmq-rabbitmq-etc
-  namespace: openstack
 ---
 apiVersion: v1
 kind: Service
@@ -521,7 +519,6 @@ metadata:
     component: server
     release_group: rabbitmq
   name: rabbitmq
-  namespace: openstack
 spec:
   clusterIP: None
   ports:
@@ -541,20 +538,6 @@ spec:
     component: server
     release_group: rabbitmq
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: rabbitmq-mgr-7b1733
-  namespace: openstack
-spec:
-  ports:
-  - name: http
-    port: 80
-  - name: https
-    port: 443
-  selector:
-    app: ingress-api
----
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -568,7 +551,6 @@ metadata:
     component: server
     release_group: rabbitmq
   name: rabbitmq-rabbitmq
-  namespace: openstack
 spec:
   podManagementPolicy: Parallel
   replicas: 2
@@ -902,48 +884,6 @@ spec:
     name: openbao-backend
   target:
     name: rabbitmq-erlang-cookie
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  annotations:
-    haproxy.org/path-rewrite: /
-    nginx.ingress.kubernetes.io/rewrite-target: /
-  name: rabbitmq-mgr-7b1733
-  namespace: openstack
-spec:
-  ingressClassName: ingress-openstack
-  rules:
-  - host: rabbitmq-mgr-7b1733
-    http:
-      paths:
-      - backend:
-          service:
-            name: rabbitmq
-            port:
-              name: http
-        path: /
-        pathType: Prefix
-  - host: rabbitmq-mgr-7b1733.openstack
-    http:
-      paths:
-      - backend:
-          service:
-            name: rabbitmq
-            port:
-              name: http
-        path: /
-        pathType: Prefix
-  - host: rabbitmq-mgr-7b1733.openstack.svc.cluster.local
-    http:
-      paths:
-      - backend:
-          service:
-            name: rabbitmq
-            port:
-              name: http
-        path: /
-        pathType: Prefix
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
