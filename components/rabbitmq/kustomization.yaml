@@ -10,7 +10,7 @@ helmCharts:
     valuesFile: values_upstream.yaml
     additionalValuesFiles:
       - values_downstream.yaml
-    version: 2026.1.2+a659ab8a2
+    version: 2026.1.27+a606f21e3
     skipTests: true
 resources:
   - externalsecrets.yaml
