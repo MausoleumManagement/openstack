@@ -1,0 +1,32 @@
+[project]
+# by default, uv derives a module name from the package name
+# secret_managment in this case
+# this is the namespace that all modules in this project
+# will live under when imported
+name = "secret-management"
+version = "0.1.0"
+description = "Secret Management scripts for our OpenStack deployment"
+readme = "README.md"
+authors = [
+    { name = "Leon Welchert", email = "lichturm@posteo.de" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "hvac>=2.4.0",
+]
+
+
+
+## building and packaging funny bits
+[project.scripts]
+# this says: "when installing this package, create an executable secret-manage
+# that imports the list_secrets module from the secret_manage package and executes main()"
+# package = dir with __init__.py
+# module = a single .py file
+# we can then invoke these scripts via 
+# `uv run secret-manage`
+secret-manage = "secret_manage.list_secrets:main"
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
